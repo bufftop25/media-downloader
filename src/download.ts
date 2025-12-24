@@ -4,7 +4,7 @@ import { get } from 'https';
 import { join } from 'path';
 import { Transform, pipeline } from 'stream';
 import { promisify } from 'util';
-import { WhatsAppPayload, MediaType, DecryptionResult } from './types';
+import { WhatsAppPayload, MediaType, DecryptionResult, WhatsAppMediaMessage } from './types';
 
 const pipe = promisify(pipeline);
 
@@ -67,33 +67,137 @@ const INFO_MAP: Record<MediaType, string> = {
   sticker: 'WhatsApp Image Keys',
 } as const;
 
+/**
+ * ✅ NOVA FUNÇÃO: Normaliza o payload detectando documentos que são imagens
+ * e convertendo-os para imageMessage antes do processamento
+ */
+function normalizePayload(payload: WhatsAppPayload): {
+  normalizedPayload: WhatsAppPayload;
+  mediaType: MediaType;
+  caption?: string;
+} {
+  const messageContent = payload.message;
+
+  // 1. Tratar documentWithCaptionMessage
+  if (messageContent.documentWithCaptionMessage) {
+    const docMsg = messageContent.documentWithCaptionMessage.message?.documentMessage;
+    if (docMsg) {
+      const caption = docMsg.caption;
+
+      // Se o documento é uma imagem (mimetype começa com "image/"), converter para imageMessage
+      if (docMsg.mimetype?.startsWith('image/')) {
+        return {
+          normalizedPayload: {
+            message: {
+              imageMessage: {
+                ...docMsg,
+                caption: caption || docMsg.caption, // Preservar caption
+              },
+            },
+          },
+          mediaType: 'image',
+          caption: caption || docMsg.caption,
+        };
+      }
+
+      // Senão, manter como documentMessage mas preservar caption
+      return {
+        normalizedPayload: {
+          message: {
+            documentMessage: docMsg,
+          },
+        },
+        mediaType: 'document',
+        caption: caption || docMsg.caption,
+      };
+    }
+  }
+
+  // 2. Tratar documentMessage direto
+  if (messageContent.documentMessage) {
+    const docMsg = messageContent.documentMessage;
+
+    // Se o documento é uma imagem, converter para imageMessage
+    if (docMsg.mimetype?.startsWith('image/')) {
+      return {
+        normalizedPayload: {
+          message: {
+            imageMessage: docMsg,
+          },
+        },
+        mediaType: 'image',
+        caption: docMsg.caption,
+      };
+    }
+  }
+
+  // 3. Para outros tipos (imageMessage, videoMessage, audioMessage, stickerMessage)
+  // retornar como está e detectar o tipo
+  const typeKey = Object.keys(messageContent).find((k) => MEDIA_TYPES[k]) as
+    | keyof WhatsAppPayload['message']
+    | undefined;
+
+  if (typeKey) {
+    const media = messageContent[typeKey] as WhatsAppMediaMessage | undefined;
+    return {
+      normalizedPayload: payload,
+      mediaType: MEDIA_TYPES[typeKey],
+      caption: media?.caption,
+    };
+  }
+
+  // Fallback: se não encontrou tipo, assumir document
+  return {
+    normalizedPayload: payload,
+    mediaType: 'document',
+  };
+}
+
+/**
+ * ✅ MELHORADO: Agora detecta automaticamente documentos que são imagens
+ * e usa o algoritmo de descriptografia correto
+ */
 export async function decryptWhatsAppMedia(
   payload: WhatsAppPayload,
   outputDir = 'output'
 ): Promise<DecryptionResult> {
-  const messageContent = payload.message;
-  const typeKey = Object.keys(messageContent).find(
-    k => MEDIA_TYPES[k]
-  ) as keyof WhatsAppPayload['message'];
+  // ✅ NORMALIZAR payload primeiro (detecta documentos que são imagens)
+  const { normalizedPayload, mediaType: detectedType, caption } = normalizePayload(payload);
+
+  const messageContent = normalizedPayload.message;
+  const typeKey = Object.keys(messageContent).find((k) => MEDIA_TYPES[k]) as
+    | keyof WhatsAppPayload['message']
+    | undefined;
 
   if (!typeKey) {
     throw new Error('Unsupported or missing media type.');
   }
 
-  let media;
+  // Extrair media do payload normalizado
+  let media: WhatsAppMediaMessage | undefined;
   if (typeKey === 'documentWithCaptionMessage') {
     media = messageContent.documentWithCaptionMessage?.message?.documentMessage;
   } else {
-    media = messageContent[typeKey];
+    media = messageContent[typeKey] as WhatsAppMediaMessage | undefined;
   }
-  if (!media) throw new Error('Media not found in payload.');
 
   if (!media) {
     throw new Error('Media not found in payload.');
   }
 
-  const mediaType = MEDIA_TYPES[typeKey];
-  const url = media?.url ?? media?.URL;
+  // ✅ Usar o tipo detectado (pode ser 'image' mesmo vindo de documentMessage)
+  const mediaType = detectedType;
+
+  // ✅ Construir URL corretamente (suportar directPath quando não há URL)
+  const url =
+    media?.url ??
+    media?.URL ??
+    (media?.directPath ? `https://mmg.whatsapp.net${media.directPath}` : null);
+
+  if (!url) {
+    throw new Error('URL or directPath not found in payload.');
+  }
+
   const mediaKeyBase64 = media.mediaKey;
   const rawMime = media.mimetype || 'application/octet-stream';
   const cleanMime = rawMime.split(';')[0].trim();
@@ -102,6 +206,7 @@ export async function decryptWhatsAppMedia(
   const fileName = rawFileName ?? `media_${Date.now()}.${extension}`;
   const outputPath = join(outputDir, fileName);
 
+  // ✅ Usar INFO_MAP correto baseado no tipo detectado (não no tipo original)
   const info = INFO_MAP[mediaType];
   const mediaKey = Buffer.from(mediaKeyBase64, 'base64');
   const expandedKey = hkdf(mediaKey, 112, Buffer.from(info));
@@ -117,22 +222,23 @@ export async function decryptWhatsAppMedia(
   let totalBytes = 0;
 
   await new Promise<void>((resolve, reject) => {
-    if (!url) {
-      reject(new Error('URL not found in payload.'));
-      return;
-    }
-
-    get(url, async res => {
+    get(url, async (res) => {
       try {
         totalBytes = parseInt(res.headers['content-length'] || '0', 10);
 
         const progressStream = new Transform({
-          transform(chunk: Buffer, _: string, callback: (error?: Error | null, data?: Buffer) => void): void {
+          transform(
+            chunk: Buffer,
+            _: string,
+            callback: (error?: Error | null, data?: Buffer) => void
+          ): void {
             downloadedBytes += chunk.length;
-            const progress = totalBytes ? (downloadedBytes / totalBytes * 100).toFixed(2) : 'unknown';
+            const progress = totalBytes
+              ? ((downloadedBytes / totalBytes) * 100).toFixed(2)
+              : 'unknown';
             process.stdout.write(`\rDownloading: ${progress}%`);
             callback(null, chunk);
-          }
+          },
         });
 
         await pipe(
@@ -157,5 +263,6 @@ export async function decryptWhatsAppMedia(
     mediaType,
     mimeType: rawMime,
     fileName,
+    caption, // ✅ Retornar caption se existir
   };
 }

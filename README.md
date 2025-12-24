@@ -1,6 +1,13 @@
 # media-downloader
 
-A simple library to decrypt and download WhatsApp media files directly from message payloads.
+A simple library to decrypt and download WhatsApp media files directly from message payloads. Enhanced version with automatic detection of images sent as documents.
+
+## ✨ New Features (v1.1.0)
+
+- **Automatic Image Detection**: Automatically detects when a `documentMessage` contains an image (based on `mimetype`) and converts it to `imageMessage` for proper decryption
+- **Document with Caption Support**: Properly handles `documentWithCaptionMessage` and preserves captions
+- **DirectPath Support**: Supports `directPath` field to construct URLs when `url` is not available
+- **Enhanced Type Safety**: Expanded interfaces with all necessary fields for images (thumbnails, captions, etc.)
 
 ## Installation
 
@@ -9,6 +16,8 @@ npm install @w3nder/media-downloader
 ```
 
 ## Usage
+
+### Basic Example
 
 ```javascript
 import { decryptWhatsAppMedia } from '@w3nder/media-downloader';
@@ -35,43 +44,68 @@ async function downloadMedia() {
 }
 ```
 
-## Running the Example
+### Example with Image Sent as Document
 
-The package includes an example that demonstrates how to download different types of WhatsApp media (documents, images, videos).
+```javascript
+// ✅ Now automatically handled! The library detects that this document is an image
+// and converts it internally to imageMessage for proper decryption
+const payload = {
+  message: {
+    documentMessage: {
+      url: "https://mmg.whatsapp.net/...",
+      mimetype: "image/png", // ✅ Detected as image!
+      mediaKey: "base64EncodedKey...",
+      fileName: "image.png",
+      jpegThumbnail: "...",
+      thumbnailDirectPath: "..."
+    }
+  }
+};
 
-1. Clone the repository:
-```bash
-git clone https://github.com/w3nder/media-downloader.git
-cd wa-download
+// The library will automatically:
+// 1. Detect mimetype starts with "image/"
+// 2. Convert to imageMessage internally
+// 3. Use correct decryption algorithm (WhatsApp Image Keys)
+// 4. Return mediaType: 'image'
 ```
 
-2. Install dependencies:
-```bash
-npm install
+### Example with Document with Caption
+
+```javascript
+const payload = {
+  message: {
+    documentWithCaptionMessage: {
+      message: {
+        documentMessage: {
+          url: "https://mmg.whatsapp.net/...",
+          mimetype: "image/png",
+          mediaKey: "base64EncodedKey...",
+          fileName: "image.png",
+          caption: "My image caption" // ✅ Preserved!
+        }
+      }
+    }
+  }
+};
+
+const result = await decryptWhatsAppMedia(payload, 'downloads');
+console.log(result.caption); // "My image caption"
 ```
-
-3. Update the media keys in `examples/download-media.ts` with your WhatsApp message data.
-
-4. Run the example:
-```bash
-npm run example
-```
-
-The example will attempt to download different types of media and save them to the `downloads` directory.
 
 ## Supported Media Types
 
-- Audio Messages
-- Images
-- Videos
-- Documents
-- Stickers
+- ✅ Audio Messages
+- ✅ Images (including images sent as documents)
+- ✅ Videos
+- ✅ Documents
+- ✅ Stickers
+- ✅ Documents with Captions
 
 ## API
 
 ### decryptWhatsAppMedia(payload, outputDir?)
 
-Decrypts and saves WhatsApp media.
+Decrypts and saves WhatsApp media. Automatically detects and handles images sent as documents.
 
 #### Parameters
 
@@ -85,10 +119,19 @@ Decrypts and saves WhatsApp media.
   outputPath: string,    // Path where the file was saved
   mediaType: string,     // Type of media (audio, image, video, document, sticker)
   mimeType: string,      // File MIME type
-  fileName: string       // Name of the saved file
+  fileName: string,      // Name of the saved file
+  caption?: string       // Caption if present (new in v1.1.0)
 }
 ```
 
+## Improvements in v1.1.0
+
+1. **Automatic Image Detection**: Documents with `mimetype` starting with `"image/"` are automatically converted to `imageMessage`
+2. **Correct Decryption Algorithm**: Uses `WhatsApp Image Keys` instead of `WhatsApp Document Keys` for images
+3. **DirectPath Support**: Constructs URLs from `directPath` when `url` is not available
+4. **Caption Preservation**: Preserves and returns captions from `documentWithCaptionMessage`
+5. **Enhanced Type Safety**: All image-specific fields are now properly typed
+
 ## License
 
-MIT 
+MIT
