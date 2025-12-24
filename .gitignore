@@ -7,3 +7,7 @@ coverage/
 .idea/
 .vscode/
 *.tsbuildinfo
+package-lock.json
+yarn.lock
+GIT_COMMANDS.md
+PUSH_CHANGES.sh
